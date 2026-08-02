@@ -1,0 +1,16 @@
+services:
+  django:
+    container_name: payment_gateway_django
+    build: .
+    restart: always
+    ports:
+      - "8002:8000"
+    volumes:
+      - .:/app
+      - ./logs:/var/log/django
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    external: true
