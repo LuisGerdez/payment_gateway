@@ -9,6 +9,13 @@ from .models import CheckoutSession, PaymentTransaction
 logger = logging.getLogger(__name__)
 
 PAYCOMET_FORM_URL = "https://rest.paycomet.com/v1/form"
+PAYCOMET_PAYMENTS_URL = "https://rest.paycomet.com/v1/payments"
+
+# Paycomet state codes returned by /v1/payments/{order}/info (inside ["payment"]["state"])
+# 0 = Failed, 1 = Correct/Paid, 2 = Unfinished/Pending
+_PAYCOMET_STATE_FAILED = 0
+_PAYCOMET_STATE_PAID = 1
+_PAYCOMET_STATE_PENDING = 2
 
 
 def _call_paycomet_form(order, amount, currency, success_url, cancel_url, original_ip, language="es"):
@@ -117,3 +124,71 @@ def create_checkout_session(price, success_url, cancel_url="", metadata=None, ex
     )
 
     return checkout_session
+
+
+def _call_paycomet_payment_info(order):
+    """
+    Query Paycomet /v1/payments/{order}/info for the current payment state.
+
+    :param order: The order reference used when creating the form (session_id string).
+    :return: Parsed JSON response dict from Paycomet.
+    :raises requests.HTTPError: If Paycomet returns a non-2xx status.
+    """
+    url = f"{PAYCOMET_PAYMENTS_URL}/{order}/info"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "PAYCOMET-API-TOKEN": settings.PAYCOMET_API_TOKEN,
+    }
+    payload = {"terminal": settings.PAYCOMET_TERMINAL}
+
+    logger.debug("Querying Paycomet payment info for order=%s", order)
+
+    response = requests.post(url, json=payload, headers=headers, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
+def sync_session_from_paycomet(session_id):
+    """
+    Queries Paycomet for the current payment state of a session, updates the local
+    CheckoutSession if the status has changed, and logs a PaymentTransaction audit record.
+
+    Args:
+        session_id (UUID | str): The session primary key.
+
+    Returns:
+        tuple[CheckoutSession, dict]: The (possibly updated) session and the raw
+        Paycomet response.
+
+    Raises:
+        CheckoutSession.DoesNotExist: If no session matches session_id.
+        requests.HTTPError: If Paycomet returns a non-2xx response.
+    """
+    session = CheckoutSession.objects.get(pk=session_id)
+
+    provider_data = _call_paycomet_payment_info(str(session.session_id))
+
+    # Payment result is nested inside provider_data["payment"]
+    payment = provider_data.get("payment", {})
+    paycomet_state = payment.get("state")  # 0=failed, 1=paid, 2=pending
+    state_name = payment.get("stateName", "")
+    event_type = PaymentTransaction.EventType.WEBHOOK_RECEIVED
+
+    if paycomet_state == _PAYCOMET_STATE_PAID and session.status == CheckoutSession.Status.PENDING:
+        session.mark_as_paid()
+        event_type = PaymentTransaction.EventType.PAYMENT_CONFIRMED
+        logger.info("CheckoutSession %s confirmed as PAID via Paycomet sync (stateName=%s).", session.session_id, state_name)
+
+    elif paycomet_state == _PAYCOMET_STATE_FAILED and session.status == CheckoutSession.Status.PENDING:
+        session.mark_as_failed()
+        event_type = PaymentTransaction.EventType.PAYMENT_FAILED
+        logger.info("CheckoutSession %s marked as FAILED via Paycomet sync (stateName=%s).", session.session_id, state_name)
+
+    PaymentTransaction.objects.create(
+        session=session,
+        event_type=event_type,
+        provider_response=provider_data,
+    )
+
+    return session, provider_data

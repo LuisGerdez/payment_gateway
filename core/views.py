@@ -6,7 +6,9 @@ from rest_framework.views import APIView
 
 from .models import CheckoutSession
 from .serializers import CheckoutSessionSerializer, CreateCheckoutSessionSerializer
-from .services import create_checkout_session
+import requests
+
+from .services import create_checkout_session, sync_session_from_paycomet
 
 logger = logging.getLogger(__name__)
 
@@ -63,3 +65,27 @@ class CheckoutSessionDetailView(APIView):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
         return Response(CheckoutSessionSerializer(session).data)
+
+
+class CheckoutSessionSyncView(APIView):
+    """
+    POST /api/sessions/<session_id>/sync/
+    Queries Paycomet for the live payment state, syncs the local session status,
+    and returns the session data together with the raw Paycomet provider response.
+    """
+
+    def post(self, request, session_id):
+        try:
+            session, provider_data = sync_session_from_paycomet(session_id)
+        except CheckoutSession.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        except requests.HTTPError as exc:
+            logger.error("Paycomet sync failed for session %s: %s", session_id, exc)
+            return Response(
+                {"detail": "Provider error.", "provider_error": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        response_data = CheckoutSessionSerializer(session).data
+        response_data["provider_status"] = provider_data
+        return Response(response_data)

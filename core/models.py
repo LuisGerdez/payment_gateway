@@ -8,6 +8,7 @@ class CheckoutSession(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         PAID = "paid", "Paid"
+        FAILED = "failed", "Failed"
         EXPIRED = "expired", "Expired"
         CANCELLED = "cancelled", "Cancelled"
 
@@ -60,6 +61,12 @@ class CheckoutSession(models.Model):
         if self.status != self.Status.PENDING:
             raise ValueError(f"Cannot expire a session with status '{self.status}'.")
         self.status = self.Status.EXPIRED
+        self.save(update_fields=["status", "updated_at"])
+
+    def mark_as_failed(self):
+        if self.status != self.Status.PENDING:
+            raise ValueError(f"Cannot mark as failed a session with status '{self.status}'.")
+        self.status = self.Status.FAILED
         self.save(update_fields=["status", "updated_at"])
 
     def cancel(self):
