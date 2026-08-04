@@ -1,7 +1,12 @@
+import base64
+import hashlib
+import hmac
+import json
 import logging
 from decimal import ROUND_HALF_UP, Decimal
 
 import requests
+from Crypto.Cipher import DES3
 from django.conf import settings
 
 from .models import CheckoutSession, PaymentTransaction
@@ -16,6 +21,33 @@ PAYCOMET_PAYMENTS_URL = "https://rest.paycomet.com/v1/payments"
 _PAYCOMET_STATE_FAILED = 0
 _PAYCOMET_STATE_PAID = 1
 _PAYCOMET_STATE_PENDING = 2
+
+
+def _validate_redsys_signature(redsys_secret_b64, ds_merchant_parameters_b64, ds_order, ds_signature):
+    """
+    Validate HMAC_SHA256_V1 signature from Redsys/Paycomet (Bizum payments).
+
+    Algorithm:
+    1. Decode the merchant secret from base64.
+    2. Derive key: 3DES-CBC encrypt Ds_Order (zero-padded to multiple of 8 bytes, IV=0).
+    3. HMAC-SHA256 of the Ds_MerchantParameters base64 string using the derived key.
+    4. Base64url-encode (no padding) and compare with Ds_Signature.
+    """
+    try:
+        secret = base64.b64decode(redsys_secret_b64)
+        order_bytes = ds_order.encode("utf-8")
+        pad_len = (8 - len(order_bytes) % 8) % 8
+        if pad_len:
+            order_bytes += b"\x00" * pad_len
+        cipher = DES3.new(secret, DES3.MODE_CBC, b"\x00" * 8)
+        derived_key = cipher.encrypt(order_bytes)
+        mac = hmac.new(derived_key, ds_merchant_parameters_b64.encode("utf-8"), hashlib.sha256).digest()
+        computed = base64.urlsafe_b64encode(mac).rstrip(b"=").decode("utf-8")
+        received = ds_signature.rstrip("=")
+        return hmac.compare_digest(computed, received)
+    except Exception as exc:
+        logger.error("Redsys signature validation error: %s", exc)
+        return False
 
 
 def _call_paycomet_form(order, amount, currency, success_url, cancel_url, original_ip, language="es"):
@@ -96,12 +128,17 @@ def create_checkout_session(price, success_url, cancel_url="", metadata=None, ex
         (Decimal(str(checkout_session.amount)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     )
 
+    # Paycomet redirects the user to this service's callback endpoints,
+    # which validate, sync status, and then redirect to fcplusapp's final URLs.
+    callback_ok_url = f"{settings.BASE_URL}/api/sessions/{checkout_session.session_id}/callback/ok/"
+    callback_ko_url = f"{settings.BASE_URL}/api/sessions/{checkout_session.session_id}/callback/ko/"
+
     paycomet_response = _call_paycomet_form(
         order=str(checkout_session.session_id),
         amount=amount_cents,
         currency=checkout_session.currency,
-        success_url=success_url,
-        cancel_url=cancel_url,
+        success_url=callback_ok_url,
+        cancel_url=callback_ko_url,
         original_ip=original_ip,
     )
 
@@ -192,3 +229,50 @@ def sync_session_from_paycomet(session_id):
     )
 
     return session, provider_data
+
+
+def handle_payment_callback(session_id, raw_params):
+    """
+    Process a browser redirect callback from Paycomet.
+
+    For Bizum, validates the Redsys HMAC_SHA256_V1 signature when
+    PAYCOMET_REDSYS_SECRET is configured. Always syncs with the Paycomet
+    API for the authoritative payment status.
+
+    Args:
+        session_id: The session primary key (UUID).
+        raw_params (dict): Flat dict of query params from the browser redirect.
+
+    Returns:
+        CheckoutSession: The (possibly updated) session.
+
+    Raises:
+        CheckoutSession.DoesNotExist: If the session is not found.
+        ValueError: If Redsys signature validation fails.
+        requests.HTTPError: If the Paycomet API sync fails.
+    """
+    session = CheckoutSession.objects.get(pk=session_id)
+
+    # Bizum/Redsys signature validation
+    if "Ds_MerchantParameters" in raw_params:
+        redsys_secret = getattr(settings, "PAYCOMET_REDSYS_SECRET", "")
+        if redsys_secret:
+            params_b64 = raw_params["Ds_MerchantParameters"]
+            ds_signature = raw_params.get("Ds_Signature", "")
+            padded_b64 = params_b64 + "=" * ((4 - len(params_b64) % 4) % 4)
+            decoded = json.loads(base64.b64decode(padded_b64).decode("utf-8"))
+            ds_order = decoded.get("Ds_Order", "")
+            if not _validate_redsys_signature(redsys_secret, params_b64, ds_order, ds_signature):
+                logger.warning("Invalid Redsys signature for session %s", session_id)
+                raise ValueError("Invalid payment callback signature.")
+
+    # Log raw redirect params for audit
+    PaymentTransaction.objects.create(
+        session=session,
+        event_type=PaymentTransaction.EventType.WEBHOOK_RECEIVED,
+        provider_response={"source": "browser_redirect", "params": raw_params},
+    )
+
+    # Sync with Paycomet for authoritative status (also logs a PaymentTransaction)
+    session, _ = sync_session_from_paycomet(session_id)
+    return session

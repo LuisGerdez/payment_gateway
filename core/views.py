@@ -1,14 +1,15 @@
 import logging
 
+import requests
+from django.http import HttpResponseRedirect
+
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import CheckoutSession
 from .serializers import CheckoutSessionSerializer, CreateCheckoutSessionSerializer
-import requests
-
-from .services import create_checkout_session, sync_session_from_paycomet
+from .services import create_checkout_session, handle_payment_callback, sync_session_from_paycomet
 
 logger = logging.getLogger(__name__)
 
@@ -89,3 +90,68 @@ class CheckoutSessionSyncView(APIView):
         response_data = CheckoutSessionSerializer(session).data
         response_data["provider_status"] = provider_data
         return Response(response_data)
+
+
+class CheckoutSessionCallbackOkView(APIView):
+    """
+    GET /api/sessions/<session_id>/callback/ok/
+    Paycomet redirects the user here after a successful payment.
+    Validates the callback (Bizum HMAC signature if present), syncs the session
+    status with Paycomet, then redirects the browser to fcplusapp's success_url.
+    """
+
+    def get(self, request, session_id):
+        raw_params = request.GET.dict()
+        session = None
+
+        try:
+            session = handle_payment_callback(session_id, raw_params)
+        except CheckoutSession.DoesNotExist:
+            logger.error("Callback ok: session %s not found", session_id)
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError:
+            # Redsys signature invalid — redirect to cancel URL as a precaution
+            logger.warning("Callback ok: invalid Redsys signature for session %s", session_id)
+            try:
+                session = CheckoutSession.objects.get(pk=session_id)
+            except CheckoutSession.DoesNotExist:
+                return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+            return HttpResponseRedirect(f"{session.cancel_url}?session_id={session_id}&error=invalid_signature")
+        except requests.HTTPError as exc:
+            # Paycomet sync failed — redirect anyway; fcplusapp can poll status later
+            logger.error("Callback ok: Paycomet sync failed for session %s: %s", session_id, exc)
+            if session is None:
+                try:
+                    session = CheckoutSession.objects.get(pk=session_id)
+                except CheckoutSession.DoesNotExist:
+                    return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return HttpResponseRedirect(f"{session.success_url}?session_id={session_id}")
+
+
+class CheckoutSessionCallbackKoView(APIView):
+    """
+    GET /api/sessions/<session_id>/callback/ko/
+    Paycomet redirects the user here on payment failure or cancellation.
+    Syncs session status and redirects the browser to fcplusapp's cancel_url.
+    """
+
+    def get(self, request, session_id):
+        raw_params = request.GET.dict()
+        session = None
+
+        try:
+            session = handle_payment_callback(session_id, raw_params)
+        except CheckoutSession.DoesNotExist:
+            logger.error("Callback ko: session %s not found", session_id)
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        except (ValueError, requests.HTTPError) as exc:
+            logger.error("Callback ko: error for session %s: %s", session_id, exc)
+            if session is None:
+                try:
+                    session = CheckoutSession.objects.get(pk=session_id)
+                except CheckoutSession.DoesNotExist:
+                    return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        target_url = session.cancel_url or session.success_url
+        return HttpResponseRedirect(f"{target_url}?session_id={session_id}")
