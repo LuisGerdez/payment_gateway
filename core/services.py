@@ -335,4 +335,47 @@ def process_paycomet_webhook(payload):
         event_type=event_type,
         provider_response=dict(payload),
     )
+
+    _forward_webhook_notification(session, event_type)
     return session
+
+
+def _forward_webhook_notification(session, event_type):
+    """
+    Forward a processed payment event to WEBHOOK_FORWARD_URL.
+
+    Sends a JSON POST with session data and signs it with HMAC-SHA256
+    using WEBHOOK_FORWARD_SECRET if configured (X-Webhook-Signature header),
+    so the receiver can validate the payload's authenticity.
+    Failures are logged but never raise — Paycomet must always get HTTP 200.
+    """
+    forward_url = getattr(settings, "WEBHOOK_FORWARD_URL", "")
+    if not forward_url:
+        return
+
+    body_data = {
+        "session_id": str(session.session_id),
+        "event": event_type,
+        "status": session.status,
+        "amount": str(session.amount),
+        "currency": session.currency,
+        "metadata": session.metadata,
+        "paid_at": session.paid_at.isoformat() if session.paid_at else None,
+    }
+    body = json.dumps(body_data)
+    headers = {"Content-Type": "application/json"}
+
+    forward_secret = getattr(settings, "WEBHOOK_FORWARD_SECRET", "")
+    if forward_secret:
+        signature = hmac.new(
+            forward_secret.encode("utf-8"),
+            body.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        headers["X-Webhook-Signature"] = signature
+
+    try:
+        resp = requests.post(forward_url, data=body, headers=headers, timeout=5)
+        logger.info("Webhook forwarded to %s — HTTP %s", forward_url, resp.status_code)
+    except Exception as exc:
+        logger.error("Failed to forward webhook to %s: %s", forward_url, exc)

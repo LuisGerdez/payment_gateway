@@ -116,5 +116,10 @@ PAYCOMET_REDSYS_SECRET = os.getenv("PAYCOMET_REDSYS_SECRET", "")
 # Terminal product password from Paycomet panel — used to validate webhook NotificationHash
 PAYCOMET_WEBHOOK_SECRET = os.getenv("PAYCOMET_WEBHOOK_SECRET", "")
 
+# URL to forward processed webhook events (e.g. fcplusapp notification endpoint)
+WEBHOOK_FORWARD_URL = os.getenv("WEBHOOK_FORWARD_URL", "")
+# Shared secret for signing forwarded payloads (X-Webhook-Signature header, HMAC-SHA256)
+WEBHOOK_FORWARD_SECRET = os.getenv("WEBHOOK_FORWARD_SECRET", "")
+
 # Public base URL of this service — used to construct internal Paycomet callback URLs
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
