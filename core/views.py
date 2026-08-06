@@ -1,3 +1,4 @@
+import calendar
 import logging
 
 import requests
@@ -14,6 +15,53 @@ from .serializers import CheckoutSessionSerializer, CreateCheckoutSessionSeriali
 from .services import create_checkout_session, handle_payment_callback, process_paycomet_webhook, sync_session_from_paycomet
 
 logger = logging.getLogger(__name__)
+
+
+def _session_to_stripe_format(session):
+    """Build a Stripe-compatible response envelope from a CheckoutSession."""
+    _STATUS_MAP = {
+        CheckoutSession.Status.PENDING: "open",
+        CheckoutSession.Status.PAID: "complete",
+        CheckoutSession.Status.FAILED: "expired",
+        CheckoutSession.Status.EXPIRED: "expired",
+        CheckoutSession.Status.CANCELLED: "expired",
+    }
+    stripe_status = _STATUS_MAP.get(session.status, "open")
+    is_paid = session.status == CheckoutSession.Status.PAID
+    payment_status = "paid" if is_paid else "unpaid"
+    amount_cents = int(session.amount * 100)
+    created_ts = int(calendar.timegm(session.created_at.timetuple()))
+    expires_at_ts = (
+        int(calendar.timegm(session.expires_at.timetuple())) if session.expires_at else None
+    )
+
+    return {
+        "stripe_session": {
+            "success": True,
+            "status": stripe_status,
+            "session": {
+                "id": str(session.session_id),
+                "object": "checkout.session",
+                "amount_subtotal": amount_cents,
+                "amount_total": amount_cents,
+                "cancel_url": session.cancel_url,
+                "created": created_ts,
+                "currency": session.currency.lower(),
+                "expires_at": expires_at_ts,
+                "metadata": session.metadata,
+                "payment_status": payment_status,
+                "status": stripe_status,
+                "success_url": session.success_url,
+                "url": session.payment_url,
+            },
+        },
+        "success": is_paid,
+        "message": (
+            "Payment successful"
+            if is_paid
+            else "Payment session not completed or expired. No changes were made to your account."
+        ),
+    }
 
 
 class HealthCheckView(APIView):
@@ -56,8 +104,14 @@ class CheckoutSessionCreateView(APIView):
             original_ip=original_ip,
         )
 
+        response_value = {
+            "success": True if session else False,
+            "session_id": session.session_id,
+            "url": session.payment_url,
+        }
+
         return Response(
-            CheckoutSessionSerializer(session).data,
+            response_value,
             status=status.HTTP_201_CREATED,
         )
 
@@ -75,7 +129,7 @@ class CheckoutSessionDetailView(APIView):
         except (CheckoutSession.DoesNotExist, ValueError):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        return Response(CheckoutSessionSerializer(session).data)
+        return Response(_session_to_stripe_format(session))
 
 
 class CheckoutSessionSyncView(APIView):
