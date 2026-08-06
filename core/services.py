@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import requests
 from Crypto.Cipher import DES3
 from django.conf import settings
+from django.db import transaction as db_transaction
 
 from .models import CheckoutSession, PaymentTransaction
 
@@ -318,23 +319,29 @@ def process_paycomet_webhook(payload):
             logger.warning("Paycomet webhook: invalid NotificationHash for Order=%s", order)
             raise ValueError("Invalid webhook signature.")
 
-    session = CheckoutSession.objects.get(pk=order)
-    event_type = PaymentTransaction.EventType.WEBHOOK_RECEIVED
+    with db_transaction.atomic():
+        session = CheckoutSession.objects.select_for_update().get(pk=order)
+        event_type = PaymentTransaction.EventType.WEBHOOK_RECEIVED
 
-    if response == "OK" and session.status == CheckoutSession.Status.PENDING:
-        session.mark_as_paid()
-        event_type = PaymentTransaction.EventType.PAYMENT_CONFIRMED
-        logger.info("CheckoutSession %s confirmed PAID via webhook.", session.session_id)
-    elif response == "KO" and session.status == CheckoutSession.Status.PENDING:
-        session.mark_as_failed()
-        event_type = PaymentTransaction.EventType.PAYMENT_FAILED
-        logger.info("CheckoutSession %s marked FAILED via webhook.", session.session_id)
+        if response == "OK" and session.status == CheckoutSession.Status.PENDING:
+            session.mark_as_paid()
+            event_type = PaymentTransaction.EventType.PAYMENT_CONFIRMED
+            logger.info("CheckoutSession %s confirmed PAID via webhook.", session.session_id)
+        elif response == "KO" and session.status == CheckoutSession.Status.PENDING:
+            session.mark_as_failed()
+            event_type = PaymentTransaction.EventType.PAYMENT_FAILED
+            logger.info("CheckoutSession %s marked FAILED via webhook.", session.session_id)
+        else:
+            logger.info(
+                "Webhook for session %s ignored — already in final state '%s' (response=%s).",
+                session.session_id, session.status, response,
+            )
 
-    PaymentTransaction.objects.create(
-        session=session,
-        event_type=event_type,
-        provider_response=dict(payload),
-    )
+        PaymentTransaction.objects.create(
+            session=session,
+            event_type=event_type,
+            provider_response=dict(payload),
+        )
 
     _forward_webhook_notification(session, event_type)
     return session
