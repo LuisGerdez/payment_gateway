@@ -6,6 +6,7 @@ from .views import (
     CheckoutSessionCreateView,
     CheckoutSessionDetailView,
     CheckoutSessionSyncView,
+    PaycometWebhookView,
 )
 
 urlpatterns = [
@@ -14,4 +15,6 @@ urlpatterns = [
     path("sessions/<uuid:session_id>/sync/", CheckoutSessionSyncView.as_view(), name="checkout-session-sync"),
     path("sessions/<uuid:session_id>/callback/ok/", CheckoutSessionCallbackOkView.as_view(), name="checkout-session-callback-ok"),
     path("sessions/<uuid:session_id>/callback/ko/", CheckoutSessionCallbackKoView.as_view(), name="checkout-session-callback-ko"),
+    
+    path("webhook/paycomet/", PaycometWebhookView.as_view(), name="paycomet-webhook"),
 ]

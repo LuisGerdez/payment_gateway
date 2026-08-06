@@ -1,7 +1,9 @@
 import logging
 
 import requests
-from django.http import HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -9,7 +11,7 @@ from rest_framework.views import APIView
 
 from .models import CheckoutSession
 from .serializers import CheckoutSessionSerializer, CreateCheckoutSessionSerializer
-from .services import create_checkout_session, handle_payment_callback, sync_session_from_paycomet
+from .services import create_checkout_session, handle_payment_callback, process_paycomet_webhook, sync_session_from_paycomet
 
 logger = logging.getLogger(__name__)
 
@@ -155,3 +157,27 @@ class CheckoutSessionCallbackKoView(APIView):
 
         target_url = session.cancel_url or session.success_url
         return HttpResponseRedirect(f"{target_url}?session_id={session_id}")
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PaycometWebhookView(APIView):
+    """
+    POST /api/webhook/paycomet/
+    Server-to-server notification from Paycomet (application/x-www-form-urlencoded).
+    Validates NotificationHash, updates session status, and returns HTTP 200.
+    Configure this URL in the Paycomet terminal panel under "Notification URL".
+    """
+
+    def post(self, request):
+        payload = request.data
+        try:
+            process_paycomet_webhook(payload)
+        except CheckoutSession.DoesNotExist:
+            logger.error("Webhook: session not found for Order=%s", payload.get("Order"))
+        except ValueError as exc:
+            logger.warning("Webhook: rejected — %s", exc)
+            return HttpResponse("INVALID", status=400)
+        except Exception as exc:
+            logger.exception("Webhook: unexpected error — %s", exc)
+            return HttpResponse("ERROR", status=500)
+        return HttpResponse("OK", status=200)

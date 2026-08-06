@@ -276,3 +276,63 @@ def handle_payment_callback(session_id, raw_params):
     # Sync with Paycomet for authoritative status (also logs a PaymentTransaction)
     session, _ = sync_session_from_paycomet(session_id)
     return session
+
+
+def process_paycomet_webhook(payload):
+    """
+    Process a server-to-server webhook notification from Paycomet.
+
+    Validates NotificationHash using SHA-512 per Paycomet docs:
+    SHA512(AccountCode + TpvID + TransactionType + Order + Amount + Currency + md5(password) + BankDateTime + Response)
+
+    Configure PAYCOMET_WEBHOOK_SECRET with the terminal's product password
+    from the Paycomet panel.
+
+    Args:
+        payload (dict): Parsed form fields from the webhook POST.
+
+    Returns:
+        CheckoutSession: The updated session.
+
+    Raises:
+        CheckoutSession.DoesNotExist: If Order doesn't match any session.
+        ValueError: If NotificationHash validation fails.
+    """
+    order = payload.get("Order", "")
+    response = payload.get("Response", "")
+
+    webhook_secret = getattr(settings, "PAYCOMET_WEBHOOK_SECRET", "")
+    if webhook_secret:
+        account_code     = payload.get("AccountCode", "")
+        tpv_id           = payload.get("TpvID", "")
+        transaction_type = payload.get("TransactionType", "")
+        amount           = payload.get("Amount", "")
+        currency         = payload.get("Currency", "")
+        bank_datetime    = payload.get("BankDateTime", "")
+        md5_password     = hashlib.md5(webhook_secret.encode("utf-8")).hexdigest()
+        expected = hashlib.sha512(
+            f"{account_code}{tpv_id}{transaction_type}{order}{amount}{currency}{md5_password}{bank_datetime}{response}".encode("utf-8")
+        ).hexdigest()
+        received = payload.get("NotificationHash", "")
+        if not hmac.compare_digest(expected.lower(), received.lower()):
+            logger.warning("Paycomet webhook: invalid NotificationHash for Order=%s", order)
+            raise ValueError("Invalid webhook signature.")
+
+    session = CheckoutSession.objects.get(pk=order)
+    event_type = PaymentTransaction.EventType.WEBHOOK_RECEIVED
+
+    if response == "OK" and session.status == CheckoutSession.Status.PENDING:
+        session.mark_as_paid()
+        event_type = PaymentTransaction.EventType.PAYMENT_CONFIRMED
+        logger.info("CheckoutSession %s confirmed PAID via webhook.", session.session_id)
+    elif response == "KO" and session.status == CheckoutSession.Status.PENDING:
+        session.mark_as_failed()
+        event_type = PaymentTransaction.EventType.PAYMENT_FAILED
+        logger.info("CheckoutSession %s marked FAILED via webhook.", session.session_id)
+
+    PaymentTransaction.objects.create(
+        session=session,
+        event_type=event_type,
+        provider_response=dict(payload),
+    )
+    return session

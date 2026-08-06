@@ -113,6 +113,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 PAYCOMET_API_TOKEN = os.getenv("PAYCOMET_API_TOKEN", "")
 PAYCOMET_TERMINAL = os.getenv("PAYCOMET_TERMINAL", "")
 PAYCOMET_REDSYS_SECRET = os.getenv("PAYCOMET_REDSYS_SECRET", "")
+# Terminal product password from Paycomet panel — used to validate webhook NotificationHash
+PAYCOMET_WEBHOOK_SECRET = os.getenv("PAYCOMET_WEBHOOK_SECRET", "")
 
 # Public base URL of this service — used to construct internal Paycomet callback URLs
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
