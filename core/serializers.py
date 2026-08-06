@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 
 from rest_framework import serializers
 
@@ -14,6 +15,11 @@ class CreateCheckoutSessionSerializer(serializers.Serializer):
     cancel_url = serializers.URLField(required=False, default="", allow_blank=True)
     metadata = serializers.DictField(required=False, default=dict, child=serializers.JSONField())
     expires_at = serializers.DateTimeField(required=False, default=None, allow_null=True)
+
+    def validate_metadata(self, value):
+        if len(json.dumps(value)) > 4096:
+            raise serializers.ValidationError("Metadata is too large (max 4096 bytes).")
+        return value
 
 
 class CheckoutSessionSerializer(serializers.ModelSerializer):
