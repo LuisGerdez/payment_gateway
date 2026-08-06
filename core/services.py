@@ -69,7 +69,7 @@ def _call_paycomet_form(order, amount, currency, success_url, cancel_url, origin
         "operationType": 1,
         "language": language,
         "payment": {
-            "terminal": settings.PAYCOMET_TERMINAL,
+            "terminal": int(settings.PAYCOMET_TERMINAL) if settings.PAYCOMET_TERMINAL else None,
             "order": order,
             "amount": str(amount),
             "currency": currency,
@@ -178,7 +178,7 @@ def _call_paycomet_payment_info(order):
         "Content-Type": "application/json",
         "PAYCOMET-API-TOKEN": settings.PAYCOMET_API_TOKEN,
     }
-    payload = {"terminal": settings.PAYCOMET_TERMINAL}
+    payload = {"terminal": int(settings.PAYCOMET_TERMINAL) if settings.PAYCOMET_TERMINAL else None}
 
     logger.debug("Querying Paycomet payment info for order=%s", order)
 
