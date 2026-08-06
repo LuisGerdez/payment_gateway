@@ -16,6 +16,14 @@ from .services import create_checkout_session, handle_payment_callback, process_
 logger = logging.getLogger(__name__)
 
 
+class HealthCheckView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        return Response({"status": "ok"})
+
+
 def _get_client_ip(request):
     """Extract the real client IP, respecting X-Forwarded-For when present."""
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
