@@ -182,7 +182,7 @@ class CheckoutSessionCallbackOkView(APIView):
             query["session_id"] = session_id
             query["canceled_payment"] = "true"
             query["error"] = "invalid_signature"
-            query["use_paycomet"] = "true"
+            query["paycomet"] = "true"
 
             new_query = urlencode(query, doseq=True)
 
@@ -205,7 +205,7 @@ class CheckoutSessionCallbackOkView(APIView):
 
         query["session_id"] = session_id
         query["success_payment"] = "true"
-        query["use_paycomet"] = "true"
+        query["paycomet"] = "true"
 
         new_query = urlencode(query, doseq=True)
 
@@ -245,7 +245,7 @@ class CheckoutSessionCallbackKoView(APIView):
 
         query["session_id"] = session_id
         query["success_payment"] = "false"
-        query["use_paycomet"] = "true"
+        query["paycomet"] = "true"
 
         new_query = urlencode(query, doseq=True)
 
