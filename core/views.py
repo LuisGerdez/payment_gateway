@@ -1,5 +1,6 @@
 import calendar
 import logging
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import requests
 from django.http import HttpResponse, HttpResponseRedirect
@@ -36,31 +37,23 @@ def _session_to_stripe_format(session):
     )
 
     return {
-        "stripe_session": {
-            "success": True,
+        "success": True,
+        "status": stripe_status,
+        "session": {
+            "id": str(session.session_id),
+            "object": "checkout.session",
+            "amount_subtotal": amount_cents,
+            "amount_total": amount_cents,
+            "cancel_url": session.cancel_url,
+            "created": created_ts,
+            "currency": session.currency.lower(),
+            "expires_at": expires_at_ts,
+            "metadata": session.metadata,
+            "payment_status": payment_status,
             "status": stripe_status,
-            "session": {
-                "id": str(session.session_id),
-                "object": "checkout.session",
-                "amount_subtotal": amount_cents,
-                "amount_total": amount_cents,
-                "cancel_url": session.cancel_url,
-                "created": created_ts,
-                "currency": session.currency.lower(),
-                "expires_at": expires_at_ts,
-                "metadata": session.metadata,
-                "payment_status": payment_status,
-                "status": stripe_status,
-                "success_url": session.success_url,
-                "url": session.payment_url,
-            },
+            "success_url": session.success_url,
+            "url": session.payment_url,
         },
-        "success": is_paid,
-        "message": (
-            "Payment successful"
-            if is_paid
-            else "Payment session not completed or expired. No changes were made to your account."
-        ),
     }
 
 
@@ -180,7 +173,21 @@ class CheckoutSessionCallbackOkView(APIView):
                 session = CheckoutSession.objects.get(pk=session_id)
             except CheckoutSession.DoesNotExist:
                 return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-            return HttpResponseRedirect(f"{session.cancel_url}?session_id={session_id}&error=invalid_signature")
+            
+            url = session.cancel_url
+
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+
+            query["session_id"] = session_id
+            query["canceled_payment"] = "true"
+            query["error"] = "invalid_signature"
+
+            new_query = urlencode(query, doseq=True)
+
+            redirect_url = urlunparse(parsed._replace(query=new_query))
+
+            return HttpResponseRedirect(redirect_url)
         except requests.HTTPError as exc:
             # Paycomet sync failed — redirect anyway; fcplusapp can poll status later
             logger.error("Callback ok: Paycomet sync failed for session %s: %s", session_id, exc)
@@ -189,8 +196,20 @@ class CheckoutSessionCallbackOkView(APIView):
                     session = CheckoutSession.objects.get(pk=session_id)
                 except CheckoutSession.DoesNotExist:
                     return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+                
+        url = session.success_url
 
-        return HttpResponseRedirect(f"{session.success_url}?session_id={session_id}")
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+
+        query["session_id"] = session_id
+        query["success_payment"] = "true"
+
+        new_query = urlencode(query, doseq=True)
+
+        redirect_url = urlunparse(parsed._replace(query=new_query))
+
+        return HttpResponseRedirect(redirect_url)
 
 
 class CheckoutSessionCallbackKoView(APIView):
@@ -218,7 +237,18 @@ class CheckoutSessionCallbackKoView(APIView):
                     return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
         target_url = session.cancel_url or session.success_url
-        return HttpResponseRedirect(f"{target_url}?session_id={session_id}")
+
+        parsed = urlparse(target_url)
+        query = parse_qs(parsed.query)
+
+        query["session_id"] = session_id
+        query["success_payment"] = "false"
+
+        new_query = urlencode(query, doseq=True)
+
+        redirect_url = urlunparse(parsed._replace(query=new_query))
+
+        return HttpResponseRedirect(redirect_url)
 
 
 @method_decorator(csrf_exempt, name="dispatch")
