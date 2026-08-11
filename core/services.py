@@ -373,6 +373,7 @@ def _forward_webhook_notification(session, event_type):
     } """
 
     body_data = _session_to_stripe_format(session)
+    body_data["paycomet"] = True
 
     logger.info("Webhook for session %s forwarded.", session.session_id)
     logger.info("Forwarded webhook payload: %s", body_data)
