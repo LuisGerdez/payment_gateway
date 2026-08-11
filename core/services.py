@@ -10,6 +10,8 @@ from Crypto.Cipher import DES3
 from django.conf import settings
 from django.db import transaction as db_transaction
 
+from core.views import _session_to_stripe_format
+
 from .models import CheckoutSession, PaymentTransaction
 
 logger = logging.getLogger(__name__)
@@ -360,7 +362,7 @@ def _forward_webhook_notification(session, event_type):
     if not forward_url:
         return
 
-    body_data = {
+    """ body_data = {
         "session_id": str(session.session_id),
         "event": event_type,
         "status": session.status,
@@ -368,7 +370,13 @@ def _forward_webhook_notification(session, event_type):
         "currency": session.currency,
         "metadata": session.metadata,
         "paid_at": session.paid_at.isoformat() if session.paid_at else None,
-    }
+    } """
+
+    body_data = _session_to_stripe_format(session)
+
+    logger.info("Webhook for session %s forwarded.", session.session_id)
+    logger.info("Forwarded webhook payload: %s", body_data)
+
     body = json.dumps(body_data)
     headers = {"Content-Type": "application/json"}
 
