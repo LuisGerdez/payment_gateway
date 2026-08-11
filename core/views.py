@@ -150,6 +150,8 @@ class CheckoutSessionCallbackOkView(APIView):
 
             redirect_url = urlunparse(parsed._replace(query=new_query))
 
+            logger.info("Callback ok: redirecting to cancel URL for session %s", session_id)
+
             return HttpResponseRedirect(redirect_url)
         except requests.HTTPError as exc:
             # Paycomet sync failed — redirect anyway; fcplusapp can poll status later
@@ -172,6 +174,8 @@ class CheckoutSessionCallbackOkView(APIView):
         new_query = urlencode(query, doseq=True)
 
         redirect_url = urlunparse(parsed._replace(query=new_query))
+
+        logger.info("Callback ok: redirecting to success URL (%s) for session %s", redirect_url, session_id)
 
         return HttpResponseRedirect(redirect_url)
 
@@ -212,6 +216,8 @@ class CheckoutSessionCallbackKoView(APIView):
         new_query = urlencode(query, doseq=True)
 
         redirect_url = urlunparse(parsed._replace(query=new_query))
+
+        logger.info("Callback ko: redirecting to %s URL (%s) for session %s", target_url, redirect_url, session_id)
 
         return HttpResponseRedirect(redirect_url)
 
