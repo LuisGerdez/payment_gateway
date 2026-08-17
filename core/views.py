@@ -1,7 +1,6 @@
 
 import logging
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-
 import requests
 from django.http import HttpResponse, HttpResponseRedirect
 from django.utils.decorators import method_decorator
@@ -12,7 +11,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import CheckoutSession
-from .services import _session_to_stripe_format
+
+from .utils import get_client_ip, session_to_stripe_format
 from .serializers import CheckoutSessionSerializer, CreateCheckoutSessionSerializer
 from .services import create_checkout_session, handle_payment_callback, process_paycomet_webhook, sync_session_from_paycomet
 
@@ -24,15 +24,7 @@ class HealthCheckView(APIView):
     permission_classes = []
 
     def get(self, request):
-        return Response({"status": "ok"})
-
-
-def _get_client_ip(request):
-    """Extract the real client IP, respecting X-Forwarded-For when present."""
-    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
-    if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "127.0.0.1")
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
 
 class CheckoutSessionCreateView(APIView):
@@ -48,10 +40,11 @@ class CheckoutSessionCreateView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
-        original_ip = _get_client_ip(request)
+        original_ip = get_client_ip(request)
 
         session = create_checkout_session(
             price=data["amount"],
+            currency=data["currency"] if "currency" in data else "EUR",
             success_url=data["success_url"],
             cancel_url=data.get("cancel_url", ""),
             metadata=data.get("metadata", {}),
@@ -65,10 +58,7 @@ class CheckoutSessionCreateView(APIView):
             "url": session.payment_url,
         }
 
-        return Response(
-            response_value,
-            status=status.HTTP_201_CREATED,
-        )
+        return Response(response_value, status=status.HTTP_201_CREATED)
 
 
 class CheckoutSessionDetailView(APIView):
@@ -83,8 +73,10 @@ class CheckoutSessionDetailView(APIView):
             session = CheckoutSession.objects.get(pk=session_id)
         except (CheckoutSession.DoesNotExist, ValueError):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        formatted_session = session_to_stripe_format(session)
 
-        return Response(_session_to_stripe_format(session))
+        return Response(formatted_session, status=status.HTTP_200_OK)
 
 
 class CheckoutSessionSyncView(APIView):
@@ -95,8 +87,10 @@ class CheckoutSessionSyncView(APIView):
     """
 
     def post(self, request, session_id):
+        send_webhook = request.data.get("send_webhook", False)
+
         try:
-            session, provider_data = sync_session_from_paycomet(session_id)
+            session, provider_data = sync_session_from_paycomet(session_id, send_webhook=send_webhook)
         except CheckoutSession.DoesNotExist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         except requests.HTTPError as exc:
@@ -108,7 +102,8 @@ class CheckoutSessionSyncView(APIView):
 
         response_data = CheckoutSessionSerializer(session).data
         response_data["provider_status"] = provider_data
-        return Response(response_data)
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class CheckoutSessionCallbackOkView(APIView):

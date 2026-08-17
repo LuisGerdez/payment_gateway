@@ -81,7 +81,9 @@ class PaymentTransaction(models.Model):
 
     class EventType(models.TextChoices):
         SESSION_CREATED = "session_created", "Session Created"
+        SESSION_QUERIED = "session_queried", "Session Queried"
         WEBHOOK_RECEIVED = "webhook_received", "Webhook Received"
+        CALLBACK_PROCESSED = "callback_processed", "Callback Processed"
         PAYMENT_CONFIRMED = "payment_confirmed", "Payment Confirmed"
         PAYMENT_FAILED = "payment_failed", "Payment Failed"
 
@@ -100,4 +102,4 @@ class PaymentTransaction(models.Model):
         verbose_name_plural = "Payment Transactions"
 
     def __str__(self):
-        return f"PaymentTransaction [{self.event_type}] session={self.session_id} @ {self.created_at}"
+        return f"PaymentTransaction [{self.event_type}] session={self.session.session_id} @ {self.created_at}"
