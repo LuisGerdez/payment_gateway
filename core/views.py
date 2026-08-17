@@ -228,6 +228,7 @@ class PaycometWebhookView(APIView):
 
     def post(self, request):
         payload = request.data
+        logger.info("Webhook: received payload %s", payload)
         try:
             process_paycomet_webhook(payload)
         except CheckoutSession.DoesNotExist:
